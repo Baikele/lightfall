@@ -1,4 +1,4 @@
-From 619b0b7aefe66a49604967f224e15725d1e72507 Mon Sep 17 00:00:00 2001
+From d02c4fbb6ad7b8b4412875673dfe42a2adf4418a Mon Sep 17 00:00:00 2001
 From: IzzelAliz <csh2001331@126.com>
 Date: Wed, 5 May 2021 23:50:01 +0800
 Subject: [PATCH] Wrap modded command arguments
@@ -6,10 +6,10 @@ Subject: [PATCH] Wrap modded command arguments
 
 diff --git a/protocol/src/main/java/io/izzel/lightfall/forge/WrappedArgumentType.java b/protocol/src/main/java/io/izzel/lightfall/forge/WrappedArgumentType.java
 new file mode 100644
-index 00000000..f47dcd09
+index 00000000..73d491fa
 --- /dev/null
 +++ b/protocol/src/main/java/io/izzel/lightfall/forge/WrappedArgumentType.java
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,21 @@
 +package io.izzel.lightfall.forge;
 +
 +import com.mojang.brigadier.StringReader;
@@ -23,6 +23,7 @@ index 00000000..f47dcd09
 +public class WrappedArgumentType implements ArgumentType<Object> {
 +
 +    public final String actualKey;
++    public final int actualIntKey;
 +    public final byte[] actualPayload;
 +
 +    @Override
@@ -31,7 +32,7 @@ index 00000000..f47dcd09
 +    }
 +}
 diff --git a/protocol/src/main/java/net/md_5/bungee/protocol/packet/Commands.java b/protocol/src/main/java/net/md_5/bungee/protocol/packet/Commands.java
-index 10490a65..0bb33ffb 100644
+index 80a16f65..5e016bf4 100644
 --- a/protocol/src/main/java/net/md_5/bungee/protocol/packet/Commands.java
 +++ b/protocol/src/main/java/net/md_5/bungee/protocol/packet/Commands.java
 @@ -21,6 +21,7 @@ import com.mojang.brigadier.tree.ArgumentCommandNode;
@@ -42,10 +43,23 @@ index 10490a65..0bb33ffb 100644
  import io.netty.buffer.ByteBuf;
  import java.util.ArrayDeque;
  import java.util.Collection;
-@@ -524,6 +525,29 @@ public class Commands extends DefinedPacket
-                 writeString(enumClass, buf);
+@@ -519,6 +520,64 @@ public class Commands extends DefinedPacket
+                 DefinedPacket.writeString( t, buf );
              }
          };
++        // lightfall start
++        private static final ArgumentSerializer<String> FORGE_ENUM = new ArgumentSerializer<String>() {
++            @Override
++            protected String read(ByteBuf buf) {
++                return readString(buf);
++            }
++
++            @Override
++            protected void write(ByteBuf buf, String enumClass) {
++                writeString(enumClass, buf);
++            }
++        };
++        private static final int ARCLIGHT_WRAP_INDEX = -256;
 +        private static final ProperArgumentSerializer<WrappedArgumentType> ARCLIGHT_WRAP = new ProperArgumentSerializer<WrappedArgumentType>() {
 +            @Override
 +            protected String getKey() {
@@ -58,10 +72,31 @@ index 10490a65..0bb33ffb 100644
 +            }
 +
 +            @Override
++            protected int getIntKey() {
++                throw new UnsupportedOperationException("getIntKey");
++            }
++
++            @Override
++            protected int getIntKey(WrappedArgumentType t) {
++                return t.actualIntKey;
++            }
++
++            @Override
 +            protected WrappedArgumentType read(ByteBuf buf) {
-+                String actualKey = readString(buf);
-+                byte[] bytes = readArray(buf);
-+                return new WrappedArgumentType(actualKey, bytes);
++                throw new UnsupportedOperationException("read");
++            }
++
++            @Override
++            protected WrappedArgumentType read(ByteBuf buf, int protocolVersion) {
++                if (protocolVersion >= ProtocolConstants.MINECRAFT_1_19) {
++                    int actualKey = readVarInt(buf);
++                    byte[] bytes = readArray(buf);
++                    return new WrappedArgumentType(null, actualKey, bytes);
++                } else {
++                    String actualKey = readString(buf);
++                    byte[] bytes = readArray(buf);
++                    return new WrappedArgumentType(actualKey, -1, bytes);
++                }
 +            }
 +
 +            @Override
@@ -69,34 +104,74 @@ index 10490a65..0bb33ffb 100644
 +                buf.writeBytes(t.actualPayload);
 +            }
 +        };
-         // lightfall end
++        // lightfall end
  
          static
-@@ -584,6 +608,8 @@ public class Commands extends DefinedPacket
-             PROVIDERS.put( "forge:enum", FORGE_ENUM );
-             PROVIDERS.put( "forge:modid", VOID );
-             PROVIDERS.put( "minecraft:", VOID );
+         {
+@@ -682,6 +741,13 @@ public class Commands extends DefinedPacket
+                 get( "minecraft:template_rotation" ),
+                 get( "minecraft:uuid" )
+             };
++            // lightfall start
++            PROVIDERS.put( "forge:enum", FORGE_ENUM );
++            PROVIDERS.put( "forge:modid", VOID );
++            PROVIDERS.put( "minecraft:", VOID );
 +            PROVIDERS.put( "arclight:wrapped", ARCLIGHT_WRAP );
 +            PROPER_PROVIDERS.put( WrappedArgumentType.class, ARCLIGHT_WRAP );
-             // lightfall end
++            // lightfall end
          }
  
-@@ -601,7 +627,7 @@ public class Commands extends DefinedPacket
-             ProperArgumentSerializer proper = PROPER_PROVIDERS.get( arg.getClass() );
-             if ( proper != null )
+         private static void register(String name, ArgumentSerializer serializer)
+@@ -702,7 +768,11 @@ public class Commands extends DefinedPacket
+             if ( protocolVersion >= ProtocolConstants.MINECRAFT_1_19 )
              {
--                writeString( proper.getKey(), buf );
-+                writeString( proper.getKey(arg), buf ); // lightfall - use arg
+                 key = readVarInt( buf );
+-
++                // lightfall - start
++                if (key.equals(ARCLIGHT_WRAP_INDEX)) {
++                    reader = ARCLIGHT_WRAP;
++                } else
++                // lightfall - end
+                 if ( protocolVersion >= ProtocolConstants.MINECRAFT_1_19_3 )
+                 {
+                     reader = IDS_1_19_3[(Integer) key];
+@@ -718,7 +788,7 @@ public class Commands extends DefinedPacket
+ 
+             Preconditions.checkArgument( reader != null, "No provider for argument " + key );
+ 
+-            Object val = reader.read( buf );
++            Object val = reader.read( buf, protocolVersion ); // lightfall - use protocol version
+             return val != null && PROPER_PROVIDERS.containsKey( val.getClass() ) ? (ArgumentType<?>) val : new DummyType( key, reader, val );
+         }
+ 
+@@ -729,10 +799,10 @@ public class Commands extends DefinedPacket
+             {
+                 if ( protocolVersion >= ProtocolConstants.MINECRAFT_1_19 )
+                 {
+-                    writeVarInt( proper.getIntKey(), buf );
++                    writeVarInt( proper.getIntKey(arg), buf ); // lightfall - use arg
+                 } else
+                 {
+-                    writeString( proper.getKey(), buf );
++                    writeString( proper.getKey(arg), buf ); // lightfall - use arg
+                 }
                  proper.write( buf, arg );
              } else
-             {
-@@ -636,10 +662,15 @@ public class Commands extends DefinedPacket
+@@ -771,6 +841,12 @@ public class Commands extends DefinedPacket
+ 
+             protected abstract T read(ByteBuf buf);
+ 
++            // lightfall start
++            protected T read(ByteBuf buf, int protocolVersion) {
++                return read(buf);
++            }
++            // lightfall end
++
              protected abstract void write(ByteBuf buf, T t);
          }
  
--        private abstract static class ProperArgumentSerializer<T> extends ArgumentSerializer<T>
--        {
-+        private abstract static class ProperArgumentSerializer<T> extends ArgumentSerializer<T> {
+@@ -780,6 +856,16 @@ public class Commands extends DefinedPacket
+             protected abstract int getIntKey();
  
              protected abstract String getKey();
 +
@@ -104,15 +179,19 @@ index 10490a65..0bb33ffb 100644
 +            protected String getKey(T t) {
 +                return getKey();
 +            }
++
++            protected int getIntKey(T t) {
++                return getIntKey();
++            }
 +            // lightfall end
          }
      }
  
 diff --git a/proxy/src/main/java/net/md_5/bungee/connection/DownstreamBridge.java b/proxy/src/main/java/net/md_5/bungee/connection/DownstreamBridge.java
-index 97c4b210..db50d0e4 100644
+index 89b98b36..4055dad9 100644
 --- a/proxy/src/main/java/net/md_5/bungee/connection/DownstreamBridge.java
 +++ b/proxy/src/main/java/net/md_5/bungee/connection/DownstreamBridge.java
-@@ -90,6 +90,7 @@ public class DownstreamBridge extends PacketHandler
+@@ -93,6 +93,7 @@ public class DownstreamBridge extends PacketHandler
              // do not perform any actions if the user has already moved
              return;
          }
